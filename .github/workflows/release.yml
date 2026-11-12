@@ -1,0 +1,125 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  preflight:
+    runs-on: ubuntu-22.04
+    outputs:
+      prerelease: ${{ steps.check.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: "3.12"
+      - run: uv sync
+      - id: check
+        # `shell: bash` gives `-eo pipefail`; the default shell would take tee's exit code.
+        shell: bash
+        run: uv run python scripts/check_release.py | tee -a "$GITHUB_OUTPUT"
+
+  build:
+    needs: preflight
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: linux-x86_64
+          - os: windows-latest
+            target: windows-x86_64
+          - os: macos-latest
+            target: macos-arm64
+    runs-on: ${{ matrix.os }}
+    env:
+      APPLEBINKS_HOME: ${{ github.workspace }}/.AppleBinks-home
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: "3.12"
+      - run: uv sync --group dev
+      - run: uv run pytest -v
+      - run: uv run pyinstaller --clean --noconfirm packaging/AppleBinks.spec
+
+      - name: Smoke GUI window (Linux)
+        if: runner.os == 'Linux'
+        # `--version` never loads Tk. Open the real window on a virtual display: it must still be
+        # running when timeout stops it (exit 124); a missing module exits sooner with 1.
+        run: timeout 15 xvfb-run -a ./dist/AppleBinks-gui || test $? -eq 124
+
+      - name: Smoke GUI window (Windows)
+        # Open the real window: unlike `--version` it runs logging setup with no console. A crash
+        # here doesn't exit, PyInstaller shows a blocking "Unhandled exception in script" dialog
+        # instead, so wait for the app's own window title rather than for the process to live.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Start-Process .\dist\AppleBinks-gui.exe
+          $title = ''
+          for ($i = 0; $i -lt 30 -and $title -notlike 'AppleBinks *'; $i++) {
+            Start-Sleep 1
+            $title = (Get-Process AppleBinks-gui -ErrorAction SilentlyContinue |
+              Where-Object MainWindowTitle | Select-Object -First 1).MainWindowTitle
+          }
+          Get-Process AppleBinks-gui -ErrorAction SilentlyContinue | Stop-Process -Force
+          if ($title -notlike 'AppleBinks *') {
+            Write-Error "AppleBinks-gui.exe never opened its window (last window title: '$title')"
+            exit 1
+          }
+
+      - name: Smoke and rename (POSIX)
+        if: runner.os != 'Windows'
+        run: |
+          ./dist/AppleBinks --version
+          ./dist/AppleBinks doctor
+          ./dist/AppleBinks-gui --version
+          mv dist/AppleBinks "dist/AppleBinks-${GITHUB_REF_NAME#v}-${{ matrix.target }}"
+          mv dist/AppleBinks-gui "dist/AppleBinks-gui-${GITHUB_REF_NAME#v}-${{ matrix.target }}"
+
+      - name: Smoke and rename (Windows)
+        # AppleBinks-gui.exe is a windowed app: PowerShell only waits for it (and sets
+        # $LASTEXITCODE) when its output is piped.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\dist\AppleBinks.exe --version; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\dist\AppleBinks.exe doctor;    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\dist\AppleBinks-gui.exe --version | Out-Host; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $v = $env:GITHUB_REF_NAME.TrimStart("v")
+          Move-Item dist\AppleBinks.exe "dist\AppleBinks-$v-${{ matrix.target }}.exe"
+          Move-Item dist\AppleBinks-gui.exe "dist\AppleBinks-gui-$v-${{ matrix.target }}.exe"
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/AppleBinks-*
+          if-no-files-found: error
+
+  publish:
+    needs: [preflight, build]
+    # Never publish if preflight produced no verdict.
+    if: needs.preflight.outputs.prerelease != ''
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: dist
+      - name: Checksums
+        run: cd dist && sha256sum AppleBinks-* > SHA256SUMS.txt && cat SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true
+          prerelease: ${{ needs.preflight.outputs.prerelease == 'true' }}

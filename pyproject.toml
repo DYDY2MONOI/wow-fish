@@ -1,0 +1,68 @@
+[project]
+name = "AppleBinks"
+dynamic = ["version"]
+description = "A vision-based fishing bot for World of Warcraft: Forever"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Richard Franklin" }]
+requires-python = ">=3.12"
+dependencies = [
+  "typer>=0.27,<1",
+  "platformdirs>=4.13,<5",
+  "loguru>=0.7,<1",
+  "numpy>=2.5,<3",
+  "tomli-w>=1.2,<2",
+  "opencv-python-headless>=4.10,<5",
+  "soundcard>=0.4,<1",
+  "mss>=10.2.0",
+  "python-xlib>=0.33 ; sys_platform == 'linux'",
+  "pyobjc-framework-Quartz>=10 ; sys_platform == 'darwin'",
+  "ttkbootstrap>=2,<3",
+]
+
+[project.optional-dependencies]
+train = []
+
+[project.scripts]
+AppleBinks = "AppleBinks.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/DYDY2MONOI/wow-fish"
+
+[dependency-groups]
+dev = [
+  "ruff>=0.17,<1",
+  "pytest>=9,<10",
+  "pytest-cov>=7,<8",
+  "pyinstaller>=6.22,<7",
+  "pre-commit>=4,<5",
+]
+
+[build-system]
+requires = ["hatchling>=1.32", "hatch-vcs>=0.5"]
+build-backend = "hatchling.build"
+
+# The version comes from the latest `v*` git tag (e.g. v1.0.0b1 -> 1.0.0b1); untagged commits
+# get a dev version such as 1.0.0b2.dev3+g1a2b3c4.
+[tool.hatch.version]
+source = "vcs"
+fallback-version = "0.0.0+unknown"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/AppleBinks"]
+
+[tool.uv]
+# Rebuild the editable install when HEAD or the tags move, so the version stays current.
+cache-keys = [{ file = "pyproject.toml" }, { git = { commit = true, tags = true } }]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,98 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, windows-latest, macos-latest]
+        python: ["3.12", "3.13"]
+    env:
+      APPLEBINKS_HOME: ${{ github.workspace }}/.AppleBinks-home
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0  # hatch-vcs derives the version from tags
+
+      - uses: astral-sh/setup-uv@v10.3.0
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+
+      - name: Sync
+        run: uv sync --group dev
+
+      - name: Lint
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
+
+      - name: Unit tests
+        run: uv run pytest -v
+
+      - name: Build executable
+        run: uv run pyinstaller --clean --noconfirm packaging/AppleBinks.spec
+
+      - name: Smoke executable (POSIX)
+        if: runner.os != 'Windows'
+        run: |
+          ./dist/AppleBinks --version
+          ./dist/AppleBinks doctor
+          ./dist/AppleBinks listen --list
+          ./dist/AppleBinks-gui --version
+
+      - name: Smoke GUI window (Linux)
+        if: runner.os == 'Linux'
+        # `--version` never loads Tk. Open the real window on a virtual display: it must still be
+        # running when timeout stops it (exit 124); a missing module exits sooner with 1.
+        run: timeout 15 xvfb-run -a ./dist/AppleBinks-gui || test $? -eq 124
+
+      - name: Smoke executable (Windows)
+        # AppleBinks-gui.exe is a windowed app: PowerShell only waits for it (and sets
+        # $LASTEXITCODE) when its output is piped.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          .\dist\AppleBinks.exe --version; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\dist\AppleBinks.exe doctor;    if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\dist\AppleBinks.exe listen --list; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          .\dist\AppleBinks-gui.exe --version | Out-Host; if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Smoke GUI window (Windows)
+        # Open the real window: unlike `--version` it runs logging setup with no console. A crash
+        # here doesn't exit, PyInstaller shows a blocking "Unhandled exception in script" dialog
+        # instead, so wait for the app's own window title rather than for the process to live.
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Start-Process .\dist\AppleBinks-gui.exe
+          $title = ''
+          for ($i = 0; $i -lt 30 -and $title -notlike 'AppleBinks *'; $i++) {
+            Start-Sleep 1
+            $title = (Get-Process AppleBinks-gui -ErrorAction SilentlyContinue |
+              Where-Object MainWindowTitle | Select-Object -First 1).MainWindowTitle
+          }
+          Get-Process AppleBinks-gui -ErrorAction SilentlyContinue | Stop-Process -Force
+          if ($title -notlike 'AppleBinks *') {
+            Write-Error "AppleBinks-gui.exe never opened its window (last window title: '$title')"
+            exit 1
+          }
+
+      - name: Upload executable
+        if: matrix.python == '3.12'
+        uses: actions/upload-artifact@v7
+        with:
+          name: AppleBinks-${{ matrix.os }}
+          path: dist/AppleBinks*
+          if-no-files-found: error
