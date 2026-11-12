@@ -10,6 +10,8 @@ import sys
 from dataclasses import dataclass
 from typing import Any
 
+from loguru import logger
+
 from AppleBinks.audio import AudioUnavailable
 from AppleBinks.audio._soundcard import SoundcardSource
 
@@ -73,36 +75,48 @@ def list_loopback_devices() -> list[LoopbackDevice]:
     return [LoopbackDevice(str(m.id), str(m.name), _is_default(m, speaker)) for m in mics]
 
 
+def resolve_loopback(mics: list[Any], speaker: Any, selector: str = "") -> tuple[Any, str]:
+    """The device `selector` names, and a warning when it is gone.
+
+    Matches an exact id, an id substring, or a case-insensitive name substring. CoreAudio
+    renumbers its devices when one is added or removed, so the id saved in the config can stop
+    existing: rather than refusing to run, fall back to the default monitor and say so.
+    """
+    if not mics:
+        raise AudioUnavailable(
+            "no loopback devices found (macOS needs a virtual device such as BlackHole)"
+        )
+    default = next((m for m in mics if _is_default(m, speaker)), mics[0])
+    if not selector:
+        return default, ""
+    wanted = selector.lower()
+    mic = next(
+        (
+            m
+            for m in mics
+            if selector == str(m.id) or selector in str(m.id) or wanted in str(m.name).lower()
+        ),
+        None,
+    )
+    if mic is not None:
+        return mic, ""
+    return default, f"saved audio device {selector!r} is gone; listening to {default.name!r}"
+
+
 def open_loopback(
     selector: str = "", *, sample_rate: int = 22050, blocksize: int = 1024
 ) -> SoundcardSource:
     """Open by exact id, id substring, or case-insensitive name substring.
 
-    An empty selector opens the monitor of the default output.
+    An empty selector opens the monitor of the default output. A selector naming a device that
+    no longer exists falls back to that default, with a warning in the log.
     """
     if sys.platform == "darwin" and blocksize > 512:
         blocksize = 512
     mics, speaker = _loopback_mics()
-    if not mics:
-        raise AudioUnavailable(
-            "no loopback devices found (macOS needs a virtual device such as BlackHole)"
-        )
-    if selector:
-        wanted = selector.lower()
-        mic = next(
-            (
-                m
-                for m in mics
-                if selector == str(m.id) or selector in str(m.id) or wanted in str(m.name).lower()
-            ),
-            None,
-        )
-        if mic is None:
-            raise AudioUnavailable(
-                f"no loopback device matches {selector!r}; run `AppleBinks listen --list`"
-            )
-    else:
-        mic = next((m for m in mics if _is_default(m, speaker)), mics[0])
+    mic, warning = resolve_loopback(mics, speaker, selector)
+    if warning:
+        logger.warning(warning)
     return SoundcardSource(mic, sample_rate, blocksize)
 
 

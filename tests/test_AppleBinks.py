@@ -1,4 +1,4 @@
-"""Seven checks that protect what the bot actually relies on: the shipped assets, the default
+"""Checks that protect what the bot actually relies on: the shipped assets, the default
 config, logging in the console-less GUI executable, that the two detectors say yes to the real
 thing and no to nothing, and that the game window is picked correctly from the compositor's
 replies.
@@ -232,3 +232,29 @@ def test_wayland_window_and_keys_from_compositor_replies(monkeypatch):
     for symbols in (NAMED_SYMBOLS, HEX_SYMBOLS):
         codes = keycodes_from_keymap(KEYMAP % symbols)
         assert codes == {"1": 2, "f": 33, "enter": 28, "f1": 59}, symbols
+
+
+def test_saved_audio_device_falls_back_when_ids_change():
+    from types import SimpleNamespace
+
+    from AppleBinks.audio.devices import resolve_loopback
+
+    mics = [
+        SimpleNamespace(id="77", name="BlackHole 2ch"),
+        SimpleNamespace(id="109", name="NDI Audio"),
+    ]
+    speaker = SimpleNamespace(id="77", name="BlackHole 2ch")
+
+    # CoreAudio renumbered the devices: the id in the config no longer exists.
+    mic, warning = resolve_loopback(mics, speaker, "81")
+    assert mic.name == "BlackHole 2ch"
+    assert "81" in warning
+
+    mic, warning = resolve_loopback(mics, speaker, "ndi")  # by name substring
+    assert (mic.name, warning) == ("NDI Audio", "")
+
+    mic, warning = resolve_loopback(mics, speaker, "77")  # by id
+    assert (mic.name, warning) == ("BlackHole 2ch", "")
+
+    mic, warning = resolve_loopback(mics, speaker)  # empty: the default output's monitor
+    assert (mic.name, warning) == ("BlackHole 2ch", "")

@@ -313,6 +313,7 @@ class Presenter:
             engine = self._build_engine(self.cfg, session_s=session_s)
         except Exception as e:
             self._results.put(WorkerFailed("start", str(e)))
+            self.did = f"Cannot start: {e}"  # on the Fish tab, not only in Logs
             return
         self._thread = EngineThread(engine)
         self._thread.start()
